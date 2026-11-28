@@ -1275,9 +1275,13 @@ pub fn main(init: std.process.Init) !void {
     // The MLX plugin seam (FsPackDir) is absolute-only while the embedded GGUF
     // engines take a relative path: resolve --model once so every engine serves
     // the one name and a refusal names the absolute path it looked for.
+    // std.c.getcwd has no Windows import library, so Windows keeps the name as
+    // given (its behavior is unchanged).
     var model_dir_abs: ?[]u8 = null;
     defer if (model_dir_abs) |p| allocator.free(p);
-    if (model_dir.len > 0 and !std.fs.path.isAbsolute(model_dir)) {
+    if (model_dir.len > 0 and !std.fs.path.isAbsolute(model_dir) and
+        @import("builtin").os.tag != .windows)
+    {
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.NoCwd;
         const cwd = std.mem.span(@as([*:0]const u8, @ptrCast(cwd_ptr)));

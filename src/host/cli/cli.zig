@@ -191,6 +191,16 @@ pub const RootDefaulting = struct {
     has_explicit_model: bool,
 };
 
+/// The absolute, folded form of a `--model` path. The MLX plugin seam
+/// (`FsPackDir`) is absolute-only and refuses a relative one as
+/// "pack dir unreadable"; the embedded GGUF engines resolve it off the
+/// cwd — same flag, two answers. main.zig resolves once so every engine and
+/// the registry's identity keys see the one name discovery would register;
+/// a refusal then names the absolute path it actually looked for.
+pub fn absolutizeModelPath(a: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]u8 {
+    return std.fs.path.resolveAlloc(a, &.{ cwd, path });
+}
+
 /// Should an unspecified `--model-dir` fall back to `~/.mlx-serve/models`?
 ///
 /// That path is already the single source of truth everywhere else — `pull`
@@ -202,19 +212,6 @@ pub const RootDefaulting = struct {
 /// The one case that must NOT default: `--model <path> --serve`, which asked
 /// for one specific model. Registering everything else on disk beside it is a
 /// different server than the one requested.
-/// The absolute form of a `--model` path. The MLX plugin seam (`FsPackDir`)
-/// is absolute-only and refuses a relative one as "pack dir unreadable"; the
-/// embedded GGUF engines resolve it off the cwd — same flag, two answers.
-/// main.zig resolves once so every engine serves the one name; a refusal
-/// then names the absolute path it actually looked for.
-pub fn absolutizeModelPath(a: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]u8 {
-    if (std.fs.path.isAbsolute(path)) return a.dupe(u8, path);
-    var rel = path;
-    while (std.mem.startsWith(u8, rel, "./")) rel = rel[2..];
-    if (rel.len == 0 or std.mem.eql(u8, rel, ".")) return a.dupe(u8, cwd);
-    return std.fs.path.join(a, &.{ cwd, rel });
-}
-
 pub fn shouldDefaultModelsRoot(in: RootDefaulting) bool {
     if (!in.serve_mode) return false;
     if (in.subcommand) return true; // `serve` / `run` always populate the picker
@@ -1495,7 +1492,7 @@ test "chooseGgufGroup: an exact quant tag wins over a longer one; no GGUF ignore
     try testing.expect((try chooseGgufGroup(testing.allocator, io, &mlx, "8bit", stderr_reporter)) == null);
 }
 
-test "absolutizeModelPath: absolute passes through; a relative joins the cwd; ./ and . fold" {
+test "absolutizeModelPath: absolute wins; relatives fold off the cwd" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1505,6 +1502,11 @@ test "absolutizeModelPath: absolute passes through; a relative joins the cwd; ./
     try testing.expectEqualStrings("/cwd/x", try absolutizeModelPath(a, "/cwd", ".//x"));
     try testing.expectEqualStrings("/cwd", try absolutizeModelPath(a, "/cwd", "."));
     try testing.expectEqualStrings("/cwd", try absolutizeModelPath(a, "/cwd", "./"));
+    try testing.expectEqualStrings("/cwd", try absolutizeModelPath(a, "/cwd", ""));
+    // Registry identity: a relative ".." or "." must fold to the same name
+    // discovery registers for the same pack under --model-dir.
+    try testing.expectEqualStrings("/cwd/packs/x", try absolutizeModelPath(a, "/cwd/deep", "../packs/x"));
+    try testing.expectEqualStrings("/cwd/a/b", try absolutizeModelPath(a, "/cwd", "a/./b"));
 }
 
 test "pickMtpSidecar: the head quantized like the trunk, else the smallest" {
